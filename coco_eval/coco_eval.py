@@ -12,6 +12,8 @@ in the end of the file, as python3 can suppress prints with contextlib
 import os
 import contextlib
 import copy
+import warnings
+from collections import defaultdict
 import numpy as np
 
 from pycocotools.cocoeval import COCOeval
@@ -104,6 +106,51 @@ def create_common_coco_eval(coco_eval, img_ids, eval_imgs):
 #################################################################
 
 
+def _prepare(self):
+    '''
+    Prepare ._gts and ._dts for evaluation based on params
+    :return: None
+    '''
+    def _toMask(anns, coco):
+        # modify ann['segmentation'] by reference
+        for ann in anns:
+            rle = coco.annToRLE(ann)
+            ann['segmentation'] = rle
+    p = self.params
+    if p.useCats:
+        gts=self.cocoGt.loadAnns(self.cocoGt.getAnnIds(imgIds=p.imgIds, catIds=p.catIds))
+        try:
+            dts=self.cocoDt.loadAnns(self.cocoDt.getAnnIds(imgIds=p.imgIds, catIds=p.catIds))
+        except Exception as e:
+            warnings.warn('Some images have no detections for some classes')
+            dts = []
+    else:
+        gts=self.cocoGt.loadAnns(self.cocoGt.getAnnIds(imgIds=p.imgIds))
+        try:
+            dts=self.cocoDt.loadAnns(self.cocoDt.getAnnIds(imgIds=p.imgIds))
+        except Exception as e:
+            warnings.warn('Some images have no detections')
+            dts = []
+
+    # convert ground truth to mask if iouType == 'segm'
+    if p.iouType == 'segm':
+        _toMask(gts, self.cocoGt)
+        _toMask(dts, self.cocoDt)
+    # set ignore flag
+    for gt in gts:
+        gt['ignore'] = gt['ignore'] if 'ignore' in gt else 0
+        gt['ignore'] = 'iscrowd' in gt and gt['iscrowd']
+        if p.iouType == 'keypoints':
+            gt['ignore'] = (gt['num_keypoints'] == 0) or gt['ignore']
+    self._gts = defaultdict(list)       # gt for evaluation
+    self._dts = defaultdict(list)       # dt for evaluation
+    for gt in gts:
+        self._gts[gt['image_id'], gt['category_id']].append(gt)
+    for dt in dts:
+        self._dts[dt['image_id'], dt['category_id']].append(dt)
+    self.evalImgs = defaultdict(list)   # per-image per-category evaluation results
+    self.eval     = {}                  # accumulated evaluation results
+
 def evaluate(self):
     '''
     Run per image evaluation on given images and store results (a list of dict) in self.evalImgs
@@ -123,7 +170,7 @@ def evaluate(self):
     p.maxDets = sorted(p.maxDets)
     self.params = p
 
-    self._prepare()
+    _prepare(self)
     # loop through images, area range, max detection number
     catIds = p.catIds if p.useCats else [-1]
 
